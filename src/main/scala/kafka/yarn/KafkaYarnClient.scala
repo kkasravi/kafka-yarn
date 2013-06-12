@@ -2,9 +2,7 @@ package kafka.yarn
 
 import scala.annotation.tailrec
 import scala.collection.JavaConversions._
-
 import org.apache.commons.logging._
-
 import org.apache.hadoop.conf._
 import org.apache.hadoop.fs._
 import org.apache.hadoop.net._
@@ -19,16 +17,25 @@ import org.apache.hadoop.yarn.ipc._
 import org.apache.hadoop.yarn.util._
 
 class KafkaYarnClient(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
+  val parser = new OptionParser
+   
+  val propsOpt = parser.addFlagOption("p", Some("props"))
+  val jarOpt = parser.addFlagOption("j", Some("jar"))
+
 
   def run(args: Array[String]) = {
     import KafkaYarnClient._
+    
+    val (options, seq) = parser.parseArgs(args.toSeq)
+    options.get("props").isDefined == true;
+
+
     val fs = FileSystem.get(getConf)
     val rpc = YarnRPC.create(getConf)
 
     // Connect to ApplicationsManager
     val yarnConf = new YarnConfiguration(getConf)
-    val rmAddress = NetUtils.createSocketAddr(
-      yarnConf.get(YarnConfiguration.RM_ADDRESS, YarnConfiguration.DEFAULT_RM_ADDRESS))
+    val rmAddress = NetUtils.createSocketAddr(yarnConf.get(YarnConfiguration.RM_ADDRESS, YarnConfiguration.DEFAULT_RM_ADDRESS))
     val applicationsManager = rpc.getProxy(classOf[ClientRMProtocol], rmAddress, conf).asInstanceOf[ClientRMProtocol]
     LOG.info("Connecting to ResourceManager at " + rmAddress)
 
