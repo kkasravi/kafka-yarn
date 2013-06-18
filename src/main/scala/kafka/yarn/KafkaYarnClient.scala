@@ -21,16 +21,14 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
 
   def run(args: Array[String]) = {
     import KafkaYarnClient._
+    val fs = FileSystem.get(getConf)
+    val rpc = YarnRPC.create(getConf)
     
     parser.addFlagOption("p", Some("props"))
     parser.addOption("j", Some("jar"))
 
     val (options, seq) = parser.parseArgs(args)
     val jarName: Option[String] = options.get("j")
-
-
-    val fs = FileSystem.get(getConf)
-    val rpc = YarnRPC.create(getConf)
 
     // Connect to ApplicationsManager
     val yarnConf = new YarnConfiguration(getConf)
@@ -51,36 +49,29 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     val amContainer = Records.newRecord(classOf[ContainerLaunchContext])
 
     // Define the local resources required
-    val localResources = args.map { jar =>
+    val localResources = jarName.map({
+      jar =>
       val jarPath = new Path(jar)
       val jarStatus = fs.getFileStatus(jarPath)
       val amJarRsrc = Records.newRecord(classOf[LocalResource])
       amJarRsrc.setType(LocalResourceType.FILE)
       amJarRsrc.setVisibility(LocalResourceVisibility.APPLICATION)
-      amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(jarPath))
+      amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(FileContext.getFileContext.makeQualified(jarPath)))
       amJarRsrc.setTimestamp(jarStatus.getModificationTime)
       amJarRsrc.setSize(jarStatus.getLen)
       (jarPath.getName -> amJarRsrc)
-    }.toMap
+    }).toMap
     amContainer.setLocalResources(localResources)
 
     // Set up the environment needed for the launch context
-    val environment = Map(Environment.CLASSPATH.name ->
-      List(Environment.CLASSPATH.$,
-        "./*",
-        Environment.HADOOP_CONF_DIR.$,
-        Environment.HADOOP_COMMON_HOME.$ + "/*",
-        Environment.HADOOP_COMMON_HOME.$ + "/lib/*",
-        Environment.HADOOP_HDFS_HOME.$ + "/*",
-        Environment.HADOOP_HDFS_HOME.$ + "/lib/*",
-        Environment.HADOOP_YARN_HOME.$ + "/*",
-        Environment.HADOOP_YARN_HOME.$ + "/lib/*").mkString(System.getProperty("path.separator")))
+    val environment = Map(Environment.CLASSPATH.name -> List(Environment.CLASSPATH.$,"./*").mkString(System.getProperty("path.separator")))
     amContainer.setEnvironment(environment)
     LOG.info("ApplicationManager environment: " + environment)
 
     // Construct the command to be executed on the launched container
     val command = List(
       Environment.JAVA_HOME.$ + "/bin/java",
+      "-cp "+"kafka-yarn-assembly-0.0.1-SNAPSHOT.jar",
       "kafka.yarn.KafkaYarnManager",
       "1>/users/kamkasravi/stdout",
       "2>/users/kamkasravi/stderr")

@@ -18,13 +18,15 @@ import java.net.URISyntaxException
 import java.util.HashMap
 import java.net.URI
 import org.apache.hadoop.yarn.exceptions.YarnRemoteException
-//import org.specs2.io.fs
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.yarn.client.AMRMClient.ContainerRequest
+import org.apache.hadoop.yarn.client.AMRMClientImpl
 
 class KafkaYarnManager(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
   import KafkaYarnManager._
-  var containerMemory = 10
+  var appDone = false
+  var containerMemory = 1024
   var shellScriptPath = ""
   val shellCommand = "startkafka"
   val fs = FileSystem.get(conf)
@@ -35,10 +37,16 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   val numCompletedContainers = new AtomicInteger()
   val numAllocatedContainers = new AtomicInteger()
   val numFailedContainers = new AtomicInteger()
+  val numRequestedContainers = new AtomicInteger()
   val numTotalContainers = 1
-  val launchThreads = Seq[Thread]()
-  val appAttemptID = Records.newRecord(classOf[ApplicationAttemptId])
+  var launchThreads = collection.mutable.Seq[Thread]()
+  var appAttemptID = Records.newRecord(classOf[ApplicationAttemptId])
   val releasedContainers = new CopyOnWriteArrayList[ContainerId]()
+  val appMasterHostname = ""
+  // Port on which the app master listens for status updates from clients
+  val appMasterRpcPort = 0
+  // Tracking url to which app master publishes info for clients to monitor
+  val appMasterTrackingUrl = ""
 
   class LaunchContainer(container: Container, var cm: ContainerManager) extends Runnable {
 
@@ -74,8 +82,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
           shellRsrc.setResource(ConverterUtils.getYarnUrlFromURI(new URI(shellScriptPath)));
         } catch {
           case e: URISyntaxException =>
-            LOG.error("Error when trying to use shell script path specified in env"
-              + ", path=" + shellScriptPath);
+            LOG.error("Error when trying to use shell script path specified in env" + ", path=" + shellScriptPath);
             e.printStackTrace();
 
             // A failure scenario on bad input such as invalid shell script path
@@ -145,30 +152,21 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
     rpc.getProxy(classOf[ContainerManager], cmAddress, conf).asInstanceOf[ContainerManager];
   }
 
-  def setupContainerAskForRM(numContainers: Int): ResourceRequest = {
-    val request = Records.newRecord(classOf[ResourceRequest]);
-
+  def setupContainerAskForRM(numContainers: Int): ContainerRequest = {
     // setup requirements for hosts
-    // whether a particular rack/host is needed
-    // Refer to apis under org.apache.hadoop.net for more
-    // details on how to get figure out rack/host mapping.
     // using * as any host will do for the distributed shell app
-    request.setHostName("*");
-
-    // set no. of containers needed
-    request.setNumContainers(numContainers);
-
     // set the priority for the request
     val pri = Records.newRecord(classOf[Priority]);
+    // TODO - what is the range for priority? how to decide?
     pri.setPriority(requestPriority);
-    request.setPriority(pri);
 
     // Set up resource type requirements
     // For now, only memory is supported so we set memory requirements
     val capability = Records.newRecord(classOf[Resource]);
     capability.setMemory(containerMemory);
-    request.setCapability(capability);
 
+    val request = new ContainerRequest(capability, null, null, pri, numContainers);
+    LOG.info("Requested container ask: " + request.toString());
     return request;
   }
 
@@ -178,27 +176,13 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
    * @return Response from RM to AM with allocated containers
    * @throws YarnRemoteException
    */
-  def sendContainerAskToRM(requestedContainers: Seq[ResourceRequest], resourceManager: AMRMProtocol): AMResponse = {
-    val req = Records.newRecord(classOf[AllocateRequest]);
-    req.setResponseId(rmRequestID.incrementAndGet());
-    req.setApplicationAttemptId(appAttemptID);
-    req.addAllAsks(seqAsJavaList(requestedContainers));
-    req.addAllReleases(releasedContainers);
-    req.setProgress(numCompletedContainers.get() / numTotalContainers);
+  def sendContainerAskToRM(resourceManager: AMRMClientImpl): AMResponse = {
+    val progressIndicator = numCompletedContainers.get() / numTotalContainers;
 
-    LOG.info("Sending request to RM for containers"
-      + ", requestedSet=" + requestedContainers.size()
-      + ", releasedSet=" + releasedContainers.size()
-      + ", progress=" + req.getProgress());
+    LOG.info("Sending request to RM for containers" + ", progress="
+        + progressIndicator);
 
-    for (rsrcReq <- requestedContainers) {
-      LOG.info("Requested container ask: " + rsrcReq.toString());
-    }
-    for (id <- releasedContainers) {
-      LOG.info("Released container, id=" + id.getId());
-    }
-
-    val resp = resourceManager.allocate(req);
+    val resp = resourceManager.allocate(progressIndicator);
     return resp.getAMResponse();
   }
 
@@ -225,78 +209,187 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
     val containerId = ConverterUtils.toContainerId(
       sys.env.getOrElse(ApplicationConstants.AM_CONTAINER_ID_ENV,
         throw new IllegalArgumentException("ContainerId not set in the environment")))
-    val appAttemptId = containerId.getApplicationAttemptId
+    appAttemptID = containerId.getApplicationAttemptId
 
     // Connect to the Scheduler of the ResourceManager
     val yarnConf = new YarnConfiguration(conf)
     val rmAddress = NetUtils.createSocketAddr(
       yarnConf.get(YarnConfiguration.RM_SCHEDULER_ADDRESS, YarnConfiguration.DEFAULT_RM_SCHEDULER_ADDRESS))
-    val resourceManager = rpc.getProxy(classOf[AMRMProtocol], rmAddress, conf).asInstanceOf[AMRMProtocol]
 
-    // Register the AM with the RM
-    val appMasterRequest = Records.newRecord(classOf[RegisterApplicationMasterRequest])
-    appMasterRequest.setApplicationAttemptId(appAttemptId)
-    //    appMasterRequest.setHost(appMasterHostname)
-    //    appMasterRequest.setRpcPort(appMasterRpcPort)
-    //    appMasterRequest.setTrackingUrl(appMasterTrackingUrl)
-    val response = resourceManager.registerApplicationMaster(appMasterRequest)
-    // Dump out information about cluster capability as seen by the resource manager
-    val minMem = response.getMinimumResourceCapability().getMemory()
-    val maxMem = response.getMaximumResourceCapability().getMemory()
-    LOG.info("Min mem capabililty of resources in this cluster " + minMem);
-    LOG.info("Max mem capabililty of resources in this cluster " + maxMem);
+    val resourceManager = new AMRMClientImpl(appAttemptID);
+    resourceManager.init(conf);
+    resourceManager.start();
+    var isSuccess = 0;
+ 
+    try {
+      // Register the AM with the RM
+      val appMasterRequest = Records.newRecord(classOf[RegisterApplicationMasterRequest])
+      appMasterRequest.setApplicationAttemptId(appAttemptID)
+      //    appMasterRequest.setHost(appMasterHostname)
+      //    appMasterRequest.setRpcPort(appMasterRpcPort)
+      //    appMasterRequest.setTrackingUrl(appMasterTrackingUrl)
+      val response = resourceManager.registerApplicationMaster(appMasterHostname, appMasterRpcPort, appMasterTrackingUrl)
+      // Dump out information about cluster capability as seen by the resource manager
+      val minMem = response.getMinimumResourceCapability().getMemory()
+      val maxMem = response.getMaximumResourceCapability().getMemory()
+      LOG.info("Min mem capabililty of resources in this cluster " + minMem);
+      LOG.info("Max mem capabililty of resources in this cluster " + maxMem);
 
-    // A resource ask has to be atleast the minimum of the capability of the cluster, the value has to be
-    // a multiple of the min value and cannot exceed the max.
-    // If it is not an exact multiple of min, the RM will allocate to the nearest multiple of min
-    if (containerMemory < minMem) {
-      LOG.info("Container memory specified below min threshold of cluster. Using min value."
-        + ", specified=" + containerMemory
-        + ", min=" + minMem);
-      containerMemory = minMem;
-    } else if (containerMemory > maxMem) {
-      LOG.info("Container memory specified above max threshold of cluster. Using max value."
-        + ", specified=" + containerMemory
-        + ", max=" + maxMem);
-      containerMemory = maxMem;
+      // A resource ask has to be atleast the minimum of the capability of the cluster, the value has to be
+      // a multiple of the min value and cannot exceed the max.
+      // If it is not an exact multiple of min, the RM will allocate to the nearest multiple of min
+      if (containerMemory < minMem) {
+        LOG.info("Container memory specified below min threshold of cluster. Using min value."
+          + ", specified=" + containerMemory
+          + ", min=" + minMem);
+        containerMemory = minMem;
+      } else if (containerMemory > maxMem) {
+        LOG.info("Container memory specified above max threshold of cluster. Using max value."
+          + ", specified=" + containerMemory
+          + ", max=" + maxMem);
+        containerMemory = maxMem;
+      }
+
+      var loopCounter = 0;
+      while (numCompletedContainers.get() < numTotalContainers && !appDone) {
+        loopCounter += 1
+        LOG.info("Current application state: loop=" + loopCounter
+          + ", appDone=" + appDone + ", total=" + numTotalContainers
+          + ", requested=" + numRequestedContainers + ", completed="
+          + numCompletedContainers + ", failed=" + numFailedContainers
+          + ", currentAllocated=" + numAllocatedContainers);
+
+        try {
+          Thread.sleep(1000);
+        } catch {
+          case e => LOG.info("Sleep interrupted " + e.getMessage())
+        }
+
+        val askCount = numTotalContainers - numRequestedContainers.get()
+        numRequestedContainers.addAndGet(askCount);
+
+        // Setup request to be sent to RM to allocate containers
+        val containerAsk = setupContainerAskForRM(askCount)
+        resourceManager.addContainerRequest(containerAsk)
+
+        // Send the request to RM
+        LOG.info("Asking RM for containers" + ", askCount=" + askCount);
+        val amResp = sendContainerAskToRM(resourceManager);
+
+        // Retrieve list of allocated containers from the response
+        val allocatedContainers = amResp.getAllocatedContainers();
+        LOG.info("Got response from RM for container ask, allocatedCnt=" + allocatedContainers.size())
+        numAllocatedContainers.addAndGet(allocatedContainers.size());
+        for (allocatedContainer <- allocatedContainers) {
+          LOG.info("Launching command on a new container."
+            + ", containerId=" + allocatedContainer.getId()
+            + ", containerNode=" + allocatedContainer.getNodeId().getHost()
+            + ":" + allocatedContainer.getNodeId().getPort()
+            + ", containerNodeURI=" + allocatedContainer.getNodeHttpAddress()
+            + ", containerState" + allocatedContainer.getState()
+            + ", containerResourceMemory" + allocatedContainer.getResource().getMemory());
+
+          val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer, rpc));
+          val launchThread = new Thread(runnableLaunchContainer);
+
+          // launch and start the container on a separate thread to keep the main thread unblocked
+          // as all containers may not be allocated at one go.
+          launchThreads = launchThreads :+ launchThread
+          launchThread.start();
+        }
+        
+        // Check what the current available resources in the cluster are
+        // TODO should we do anything if the available resources are not enough?
+        val availableResources = amResp.getAvailableResources();
+        LOG.info("Current available resources in the cluster " + availableResources);
+
+        // Check the completed containers
+        val completedContainers = amResp.getCompletedContainersStatuses();
+        LOG.info("Got response from RM for container ask, completedCnt="+ completedContainers.size());
+        for (containerStatus <- completedContainers) {
+          LOG.info("Got container status for containerID="
+              + containerStatus.getContainerId() + ", state="
+              + containerStatus.getState() + ", exitStatus="
+              + containerStatus.getExitStatus() + ", diagnostics="
+              + containerStatus.getDiagnostics());
+
+          // non complete containers should not be here
+          assert (containerStatus.getState() == ContainerState.COMPLETE);
+
+          // increment counters for completed/failed containers
+          val exitStatus = containerStatus.getExitStatus();
+          if (0 != exitStatus) {
+            // container failed
+            if (-100 != exitStatus) {
+              // shell script failed
+              // counts as completed
+              numCompletedContainers.incrementAndGet();
+              numFailedContainers.incrementAndGet();
+            } else {
+              // something else bad happened
+              // app job did not complete for some reason
+              // we should re-try as the container was lost for some reason
+              numAllocatedContainers.decrementAndGet();
+              numRequestedContainers.decrementAndGet();
+              // we do not need to release the container as it would be done
+              // by the RM/CM.
+            }
+          } else {
+            // nothing to do
+            // container completed successfully
+            numCompletedContainers.incrementAndGet();
+            LOG.info("Container completed successfully." + ", containerId="
+                + containerStatus.getContainerId());
+          }
+                  }
+        if (numCompletedContainers.get() == numTotalContainers) {
+          appDone = true;
+        }
+
+        LOG.info("Current application state: loop=" + loopCounter
+            + ", appDone=" + appDone + ", total=" + numTotalContainers
+            + ", requested=" + numRequestedContainers + ", completed="
+            + numCompletedContainers + ", failed=" + numFailedContainers
+            + ", currentAllocated=" + numAllocatedContainers);
+
+        // TODO
+        // Add a timeout handling layer
+        // for misbehaving shell commands
+      }
+
+      // Join all launched threads
+      // needed for when we time out
+      // and we need to release containers
+      for (launchThread <- launchThreads) {
+        try {
+          launchThread.join(10000);
+        } catch  {
+          case e =>
+          LOG.info("Exception thrown in thread join: " + e.getMessage());
+          e.printStackTrace();
+        }
+      }
+
+      // When the application completes, it should send a finish application
+      // signal to the RM
+      LOG.info("Application completed. Signalling finish to RM");
+
+      var appStatus = FinalApplicationStatus.SUCCEEDED;
+      var appMessage = "";
+      if (numFailedContainers.get() == 0) {
+        appStatus = FinalApplicationStatus.SUCCEEDED;
+      } else {
+        appStatus = FinalApplicationStatus.FAILED;
+        appMessage = "Diagnostics." + ", total=" + numTotalContainers + ", completed=" + numCompletedContainers.get() + ", allocated="
+            + numAllocatedContainers.get() + ", failed="
+            + numFailedContainers.get();
+        isSuccess = 1;
+      }
+      resourceManager.unregisterApplicationMaster(appStatus, appMessage, null);
+    } finally {
+      resourceManager.stop();
     }
-
-    // Setup request to be sent to RM to allocate containers
-    val resourceReq = Seq[ResourceRequest]();
-    val containerAsk = setupContainerAskForRM(1);
-    resourceReq :+ containerAsk;
-
-    // Send the request to RM
-    val amResp = sendContainerAskToRM(resourceReq, resourceManager);
-
-    // Retrieve list of allocated containers from the response
-    val allocatedContainers = amResp.getAllocatedContainers();
-    LOG.info("Got response from RM for container ask, allocatedCnt=" + allocatedContainers.size())
-    numAllocatedContainers.addAndGet(allocatedContainers.size());
-    for (allocatedContainer <- allocatedContainers) {
-      LOG.info("Launching command on a new container."
-        + ", containerId=" + allocatedContainer.getId()
-        + ", containerNode=" + allocatedContainer.getNodeId().getHost()
-        + ":" + allocatedContainer.getNodeId().getPort()
-        + ", containerNodeURI=" + allocatedContainer.getNodeHttpAddress()
-        + ", containerState" + allocatedContainer.getState()
-        + ", containerResourceMemory" + allocatedContainer.getResource().getMemory());
-
-      val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer, rpc));
-      val launchThread = new Thread(runnableLaunchContainer);
-
-      // launch and start the container on a separate thread to keep the main thread unblocked
-      // as all containers may not be allocated at one go.
-      launchThreads :+ launchThread;
-      launchThread.start();
-    }
-
-    // Finish
-    val finishRequest = Records.newRecord(classOf[FinishApplicationMasterRequest])
-    finishRequest.setAppAttemptId(appAttemptId)
-    finishRequest.setFinishApplicationStatus(FinalApplicationStatus.SUCCEEDED)
-    resourceManager.finishApplicationMaster(finishRequest)
-    if (finishRequest.getFinalApplicationStatus() == FinalApplicationStatus.SUCCEEDED) 0 else 1
+    (isSuccess)
 
   }
 }
