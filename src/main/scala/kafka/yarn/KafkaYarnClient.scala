@@ -18,16 +18,15 @@ import org.apache.hadoop.yarn.util._
 
 class KafkaYarnClient(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
   val parser = new OptionParser
-   
-  val propsOpt = parser.addFlagOption("p", Some("props"))
-  val jarOpt = parser.addFlagOption("j", Some("jar"))
-
 
   def run(args: Array[String]) = {
     import KafkaYarnClient._
     
-    val (options, seq) = parser.parseArgs(args.toSeq)
-    options.get("props").isDefined == true;
+    parser.addFlagOption("p", Some("props"))
+    parser.addOption("j", Some("jar"))
+
+    val (options, seq) = parser.parseArgs(args)
+    val jarName: Option[String] = options.get("j")
 
 
     val fs = FileSystem.get(getConf)
@@ -83,8 +82,10 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     val command = List(
       Environment.JAVA_HOME.$ + "/bin/java",
       "kafka.yarn.KafkaYarnManager",
-      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,
-      "2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDERR)
+      "1>/users/kamkasravi/stdout",
+      "2>/users/kamkasravi/stderr")
+//      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,
+//      "2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDERR)
     amContainer.setCommands(command)
     LOG.info("ApplicationManager Command: " + command.mkString(" "))
 

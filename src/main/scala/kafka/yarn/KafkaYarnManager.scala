@@ -18,14 +18,18 @@ import java.net.URISyntaxException
 import java.util.HashMap
 import java.net.URI
 import org.apache.hadoop.yarn.exceptions.YarnRemoteException
+//import org.specs2.io.fs
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.FileSystem
 
 class KafkaYarnManager(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
   import KafkaYarnManager._
   var containerMemory = 10
-  var resourceManager = Records.newRecord(classOf[AMRMProtocol])
-  var rpc = Records.newRecord(classOf[YarnRPC])
   var shellScriptPath = ""
-  val commandEnv = Map[String,String]()
+  val shellCommand = "startkafka"
+  val fs = FileSystem.get(conf)
+  var ExecShellStringPath = "ExecShellScript.sh"
+  val commandEnv = Map[String, String]()
   val requestPriority = 0
   val rmRequestID = new AtomicInteger()
   val numCompletedContainers = new AtomicInteger()
@@ -35,11 +39,10 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   val launchThreads = Seq[Thread]()
   val appAttemptID = Records.newRecord(classOf[ApplicationAttemptId])
   val releasedContainers = new CopyOnWriteArrayList[ContainerId]()
-  
-class LaunchContainer(container: Container, var cm: ContainerManager) extends Runnable {
 
-    @Override
-    /**
+  class LaunchContainer(container: Container, var cm: ContainerManager) extends Runnable {
+
+    @Override /**
      * Connects to CM, sets up container launch context
      * for shell command and eventually dispatches the container
      * start request to the CM.
@@ -71,20 +74,18 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
           shellRsrc.setResource(ConverterUtils.getYarnUrlFromURI(new URI(shellScriptPath)));
         } catch {
           case e: URISyntaxException =>
-          LOG.error("Error when trying to use shell script path specified in env"
+            LOG.error("Error when trying to use shell script path specified in env"
               + ", path=" + shellScriptPath);
-          e.printStackTrace();
+            e.printStackTrace();
 
-          // A failure scenario on bad input such as invalid shell script path
-          // We know we cannot continue launching the container
-          // so we should release it.
-          // TODO
-          numCompletedContainers.incrementAndGet();
-          numFailedContainers.incrementAndGet();
-          return;
+            // A failure scenario on bad input such as invalid shell script path
+            // We know we cannot continue launching the container
+            // so we should release it.
+            // TODO
+            numCompletedContainers.incrementAndGet();
+            numFailedContainers.incrementAndGet();
+            return ;
         }
-        shellRsrc.setTimestamp(shellScriptPathTimestamp);
-        shellRsrc.setSize(shellScriptPathLen);
         localResources.put(ExecShellStringPath, shellRsrc);
       }
       ctx.setLocalResources(localResources);
@@ -99,8 +100,6 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
         vargs.add(ExecShellStringPath);
       }
 
-      // Set args for the shell command if any
-      vargs.add(shellArgs);
       // Add log redirect params
       // TODO
       // We should redirect the output to hdfs instead of local logs
@@ -126,140 +125,25 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
         cm.startContainer(startReq);
       } catch {
         case e: YarnRemoteException =>
-        LOG.info("Start container failed for :"
+          LOG.info("Start container failed for :"
             + ", containerId=" + container.getId());
-        e.printStackTrace();
+          e.printStackTrace();
         // TODO do we need to release this container?
       }
 
     }
-}
-  
-  /**
-   * Parse command line options
-   * @param args Command line args 
-   * @return Whether init successful and run should be invoked 
-   * @throws ParseException
-   * @throws IOException 
-   */
-  def init(args: Array[String]): Boolean = {
-
-    Options opts = new Options();
-    opts.addOption("app_attempt_id", true, "App Attempt ID. Not to be used unless for testing purposes");
-    opts.addOption("shell_command", true, "Shell command to be executed by the Application Master");
-    opts.addOption("shell_script", true, "Location of the shell script to be executed");
-    opts.addOption("shell_args", true, "Command line args for the shell script");
-    opts.addOption("shell_env", true, "Environment for shell script. Specified as env_key=env_val pairs");
-    opts.addOption("container_memory", true, "Amount of memory in MB to be requested to run the shell command");
-    opts.addOption("num_containers", true, "No. of containers on which the shell command needs to be executed");
-    opts.addOption("priority", true, "Application Priority. Default 0");
-    opts.addOption("debug", false, "Dump out debug information");
-
-    opts.addOption("help", false, "Print usage");
-    CommandLine cliParser = new GnuParser().parse(opts, args);
-
-    if (args.length == 0) {
-      printUsage(opts);
-      throw new IllegalArgumentException("No args specified for application master to initialize");
-    }
-
-    if (cliParser.hasOption("help")) {
-      printUsage(opts);
-      return false;
-    }
-
-    if (cliParser.hasOption("debug")) {
-      dumpOutDebugInfo();
-    }
-
-    Map<String, String> envs = System.getenv();
-
-    appAttemptID = Records.newRecord(ApplicationAttemptId.class);
-    if (envs.containsKey(ApplicationConstants.AM_APP_ATTEMPT_ID_ENV)) {
-      appAttemptID = ConverterUtils.toApplicationAttemptId(envs
-          .get(ApplicationConstants.AM_APP_ATTEMPT_ID_ENV));
-    } else if (!envs.containsKey(ApplicationConstants.AM_CONTAINER_ID_ENV)) {
-      if (cliParser.hasOption("app_attempt_id")) {
-        String appIdStr = cliParser.getOptionValue("app_attempt_id", "");
-        appAttemptID = ConverterUtils.toApplicationAttemptId(appIdStr);
-      } 
-      else {
-        throw new IllegalArgumentException("Application Attempt Id not set in the environment");
-      }
-    } else {
-      ContainerId containerId = ConverterUtils.toContainerId(envs.get(ApplicationConstants.AM_CONTAINER_ID_ENV));
-      appAttemptID = containerId.getApplicationAttemptId();
-    }
-
-    LOG.info("Application master for app"
-        + ", appId=" + appAttemptID.getApplicationId().getId()
-        + ", clustertimestamp=" + appAttemptID.getApplicationId().getClusterTimestamp()
-        + ", attemptId=" + appAttemptID.getAttemptId());
-
-    if (!cliParser.hasOption("shell_command")) {
-      throw new IllegalArgumentException("No shell command specified to be executed by application master");
-    }
-    shellCommand = cliParser.getOptionValue("shell_command");
-
-    if (cliParser.hasOption("shell_args")) {
-      shellArgs = cliParser.getOptionValue("shell_args");
-    }
-    if (cliParser.hasOption("shell_env")) { 
-      String shellEnvs[] = cliParser.getOptionValues("shell_env");
-      for (String env : shellEnvs) {
-        env = env.trim();
-        int index = env.indexOf('=');
-        if (index == -1) {
-          shellEnv.put(env, "");
-          continue;
-        }
-        String key = env.substring(0, index);
-        String val = "";
-        if (index < (env.length()-1)) {
-          val = env.substring(index+1);
-        }
-        shellEnv.put(key, val);
-      }
-    }
-
-    if (envs.containsKey(DSConstants.DISTRIBUTEDSHELLSCRIPTLOCATION)) {
-      shellScriptPath = envs.get(DSConstants.DISTRIBUTEDSHELLSCRIPTLOCATION);
-
-      if (envs.containsKey(DSConstants.DISTRIBUTEDSHELLSCRIPTTIMESTAMP)) {
-        shellScriptPathTimestamp = Long.valueOf(envs.get(DSConstants.DISTRIBUTEDSHELLSCRIPTTIMESTAMP));
-      }
-      if (envs.containsKey(DSConstants.DISTRIBUTEDSHELLSCRIPTLEN)) {
-        shellScriptPathLen = Long.valueOf(envs.get(DSConstants.DISTRIBUTEDSHELLSCRIPTLEN));
-      }
-
-      if (!shellScriptPath.isEmpty()
-          && (shellScriptPathTimestamp <= 0 
-          || shellScriptPathLen <= 0)) {
-        LOG.error("Illegal values in env for shell script path"
-            + ", path=" + shellScriptPath
-            + ", len=" + shellScriptPathLen
-            + ", timestamp=" + shellScriptPathTimestamp);
-        throw new IllegalArgumentException("Illegal values in env for shell script path");
-      }
-    }
-
-    containerMemory = Integer.parseInt(cliParser.getOptionValue("container_memory", "10"));
-    numTotalContainers = Integer.parseInt(cliParser.getOptionValue("num_containers", "1"));
-    requestPriority = Integer.parseInt(cliParser.getOptionValue("priority", "0"));
-
-    return true;
   }
 
-    /**
-     * Helper function to connect to CM
-     */
-    def connectToCM(container: Container): ContainerManager = {
-      LOG.debug("Connecting to ContainerManager for containerid=" + container.getId())
-      val cmIpPortStr = container.getNodeId().getHost() + ":" + container.getNodeId().getPort()
-      val cmAddress = NetUtils.createSocketAddr(cmIpPortStr)
-      LOG.info("Connecting to ContainerManager at " + cmIpPortStr)
-      rpc.getProxy(classOf[ContainerManager], cmAddress, conf).asInstanceOf[ContainerManager];
-    }
+  /**
+   * Helper function to connect to CM
+   */
+  def connectToCM(container: Container, rpc: YarnRPC): ContainerManager = {
+    LOG.debug("Connecting to ContainerManager for containerid=" + container.getId())
+    val cmIpPortStr = container.getNodeId().getHost() + ":" + container.getNodeId().getPort()
+    val cmAddress = NetUtils.createSocketAddr(cmIpPortStr)
+    LOG.info("Connecting to ContainerManager at " + cmIpPortStr)
+    rpc.getProxy(classOf[ContainerManager], cmAddress, conf).asInstanceOf[ContainerManager];
+  }
 
   def setupContainerAskForRM(numContainers: Int): ResourceRequest = {
     val request = Records.newRecord(classOf[ResourceRequest]);
@@ -287,25 +171,25 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
 
     return request;
   }
-  
-    /**
+
+  /**
    * Ask RM to allocate given no. of containers to this Application Master
    * @param requestedContainers Containers to ask for from RM
    * @return Response from RM to AM with allocated containers
    * @throws YarnRemoteException
    */
-   def sendContainerAskToRM(requestedContainers: Seq[ResourceRequest]): AMResponse = {
+  def sendContainerAskToRM(requestedContainers: Seq[ResourceRequest], resourceManager: AMRMProtocol): AMResponse = {
     val req = Records.newRecord(classOf[AllocateRequest]);
     req.setResponseId(rmRequestID.incrementAndGet());
     req.setApplicationAttemptId(appAttemptID);
     req.addAllAsks(seqAsJavaList(requestedContainers));
     req.addAllReleases(releasedContainers);
-    req.setProgress(numCompletedContainers.get()/numTotalContainers);
+    req.setProgress(numCompletedContainers.get() / numTotalContainers);
 
     LOG.info("Sending request to RM for containers"
-        + ", requestedSet=" + requestedContainers.size()
-        + ", releasedSet=" + releasedContainers.size()
-        + ", progress=" + req.getProgress());
+      + ", requestedSet=" + requestedContainers.size()
+      + ", releasedSet=" + releasedContainers.size()
+      + ", progress=" + req.getProgress());
 
     for (rsrcReq <- requestedContainers) {
       LOG.info("Requested container ask: " + rsrcReq.toString());
@@ -317,12 +201,26 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
     val resp = resourceManager.allocate(req);
     return resp.getAMResponse();
   }
-   
+
+  def addResource(localResources: Map[String, LocalResource], url: String, name: String, rType: LocalResourceType): Unit = {
+    val path = new Path(url);
+    val status = fs.getFileStatus(path);
+    System.out.println(name + " size: " + status.getLen());
+
+    val resource = Records.newRecord(classOf[LocalResource]);
+    resource.setType(rType);
+    resource.setVisibility(LocalResourceVisibility.APPLICATION);
+    resource.setResource(ConverterUtils.getYarnUrlFromPath(path));
+    resource.setTimestamp(status.getModificationTime());
+    resource.setSize(status.getLen());
+    localResources.put(name, resource);
+  }
+
   /**
    * @param args
    */
   def run(args: Array[String]) = {
-	rpc = YarnRPC.create(conf)
+    val rpc = YarnRPC.create(conf)
     // Get containerId
     val containerId = ConverterUtils.toContainerId(
       sys.env.getOrElse(ApplicationConstants.AM_CONTAINER_ID_ENV,
@@ -333,7 +231,7 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
     val yarnConf = new YarnConfiguration(conf)
     val rmAddress = NetUtils.createSocketAddr(
       yarnConf.get(YarnConfiguration.RM_SCHEDULER_ADDRESS, YarnConfiguration.DEFAULT_RM_SCHEDULER_ADDRESS))
-    resourceManager = rpc.getProxy(classOf[AMRMProtocol], rmAddress, conf).asInstanceOf[AMRMProtocol]
+    val resourceManager = rpc.getProxy(classOf[AMRMProtocol], rmAddress, conf).asInstanceOf[AMRMProtocol]
 
     // Register the AM with the RM
     val appMasterRequest = Records.newRecord(classOf[RegisterApplicationMasterRequest])
@@ -342,7 +240,7 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
     //    appMasterRequest.setRpcPort(appMasterRpcPort)
     //    appMasterRequest.setTrackingUrl(appMasterTrackingUrl)
     val response = resourceManager.registerApplicationMaster(appMasterRequest)
-        // Dump out information about cluster capability as seen by the resource manager
+    // Dump out information about cluster capability as seen by the resource manager
     val minMem = response.getMinimumResourceCapability().getMemory()
     val maxMem = response.getMaximumResourceCapability().getMemory()
     LOG.info("Min mem capabililty of resources in this cluster " + minMem);
@@ -353,47 +251,46 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
     // If it is not an exact multiple of min, the RM will allocate to the nearest multiple of min
     if (containerMemory < minMem) {
       LOG.info("Container memory specified below min threshold of cluster. Using min value."
-          + ", specified=" + containerMemory
-          + ", min=" + minMem);
+        + ", specified=" + containerMemory
+        + ", min=" + minMem);
       containerMemory = minMem;
-    }
-    else if (containerMemory > maxMem) {
+    } else if (containerMemory > maxMem) {
       LOG.info("Container memory specified above max threshold of cluster. Using max value."
-          + ", specified=" + containerMemory
-          + ", max=" + maxMem);
+        + ", specified=" + containerMemory
+        + ", max=" + maxMem);
       containerMemory = maxMem;
     }
-    
+
     // Setup request to be sent to RM to allocate containers
     val resourceReq = Seq[ResourceRequest]();
     val containerAsk = setupContainerAskForRM(1);
     resourceReq :+ containerAsk;
-    
+
     // Send the request to RM
-    val amResp = sendContainerAskToRM(resourceReq);
+    val amResp = sendContainerAskToRM(resourceReq, resourceManager);
 
     // Retrieve list of allocated containers from the response
     val allocatedContainers = amResp.getAllocatedContainers();
     LOG.info("Got response from RM for container ask, allocatedCnt=" + allocatedContainers.size())
     numAllocatedContainers.addAndGet(allocatedContainers.size());
     for (allocatedContainer <- allocatedContainers) {
-        LOG.info("Launching shell command on a new container."
-            + ", containerId=" + allocatedContainer.getId()
-            + ", containerNode=" + allocatedContainer.getNodeId().getHost()
-            + ":" + allocatedContainer.getNodeId().getPort()
-            + ", containerNodeURI=" + allocatedContainer.getNodeHttpAddress()
-            + ", containerState" + allocatedContainer.getState()
-            + ", containerResourceMemory" + allocatedContainer.getResource().getMemory());
+      LOG.info("Launching command on a new container."
+        + ", containerId=" + allocatedContainer.getId()
+        + ", containerNode=" + allocatedContainer.getNodeId().getHost()
+        + ":" + allocatedContainer.getNodeId().getPort()
+        + ", containerNodeURI=" + allocatedContainer.getNodeHttpAddress()
+        + ", containerState" + allocatedContainer.getState()
+        + ", containerResourceMemory" + allocatedContainer.getResource().getMemory());
 
-        val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer));
-        val launchThread = new Thread(runnableLaunchContainer);
+      val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer, rpc));
+      val launchThread = new Thread(runnableLaunchContainer);
 
-        // launch and start the container on a separate thread to keep the main thread unblocked
-        // as all containers may not be allocated at one go.
-        launchThreads :+ launchThread;
-        launchThread.start();
-      }
-      
+      // launch and start the container on a separate thread to keep the main thread unblocked
+      // as all containers may not be allocated at one go.
+      launchThreads :+ launchThread;
+      launchThread.start();
+    }
+
     // Finish
     val finishRequest = Records.newRecord(classOf[FinishApplicationMasterRequest])
     finishRequest.setAppAttemptId(appAttemptId)
@@ -405,16 +302,15 @@ class LaunchContainer(container: Container, var cm: ContainerManager) extends Ru
 }
 
 object KafkaYarnManager {
-
   val LOG = LogFactory.getLog(classOf[KafkaYarnManager])
-
   val ApplicationName = "KafkaYarnManager"
 
   /**
    * @param args
    */
   def main(args: Array[String]) {
-    sys.exit(ToolRunner.run(new KafkaYarnManager, args))
+    val rt = ToolRunner.run(new KafkaYarnManager, args)
+    sys.exit(rt)
   }
 
 }

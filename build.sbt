@@ -1,3 +1,5 @@
+import AssemblyKeys._
+
 organization := "com.intel"
 
 name := "kafka-yarn"
@@ -32,3 +34,31 @@ libraryDependencies ++= Seq(
 testOptions in Test += Tests.Argument("console", "junitxml")
 
 EclipseKeys.withSource := true
+
+assemblySettings
+
+mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
+//  {
+//    case "META-INF/MANIFEST.MF" => MergeStrategy.discard
+//    case _ => MergeStrategy.first
+//  }
+  {
+    case "plugin.xml" =>
+      MergeStrategy.first
+    case x if x startsWith "org/apache/jasper" =>
+      MergeStrategy.last
+    case x if x startsWith "javax/xml" =>
+      MergeStrategy.last
+    case x if x startsWith "javax/servlet" =>
+      MergeStrategy.last
+    case x if x startsWith "org/apache/commons" =>
+      MergeStrategy.last
+    case x if x startsWith "org/apache/xmlcommons" =>
+      MergeStrategy.last
+    case x if x startsWith "org/xml/sax" =>
+      MergeStrategy.last
+    case x if x startsWith "org/w3c/dom" =>
+      MergeStrategy.last
+    case x => old(x)
+  }
+}
