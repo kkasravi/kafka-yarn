@@ -27,10 +27,10 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   import KafkaYarnManager._
   var appDone = false
   var containerMemory = 1024
-  var shellScriptPath = ""
-  val shellCommand = "startkafka"
+  var commandPath = ""
+  val startCommand = "kafka"
   val fs = FileSystem.get(conf)
-  var ExecShellStringPath = "ExecShellScript.sh"
+  var softLink = "command.sh"
   val commandEnv = Map[String, String]()
   val requestPriority = 0
   val rmRequestID = new AtomicInteger()
@@ -50,9 +50,10 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 
   class LaunchContainer(container: Container, var cm: ContainerManager) extends Runnable {
 
-    @Override /**
+    @Override 
+    /**
      * Connects to CM, sets up container launch context
-     * for shell command and eventually dispatches the container
+     * for kafka command and eventually dispatches the container
      * start request to the CM.
      */
     def run() {
@@ -68,23 +69,22 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 
       // Set the environment
       ctx.setEnvironment(commandEnv);
-      // Set the local resources
-      val localResources = Map[String, LocalResource]();
 
-      // The container for the eventual shell commands needs its own local resources too.
-      // In this scenario, if a shell script is specified, we need to have it copied
+      // The container for the kafka command needs its own local resources too.
+      // In this scenario, if local resources are specified, we need to have it copied
       // and made available to the container.
-      if (!shellScriptPath.isEmpty()) {
-        val shellRsrc = Records.newRecord(classOf[LocalResource]);
-        shellRsrc.setType(LocalResourceType.FILE);
-        shellRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
+      if (!commandPath.isEmpty()) {
+        // Set the local resources
+        val localResources = Map[String, LocalResource]();
+        val localResource = Records.newRecord(classOf[LocalResource]);
+        localResource.setType(LocalResourceType.FILE);
+        localResource.setVisibility(LocalResourceVisibility.APPLICATION);
         try {
-          shellRsrc.setResource(ConverterUtils.getYarnUrlFromURI(new URI(shellScriptPath)));
+          localResource.setResource(ConverterUtils.getYarnUrlFromURI(new URI(commandPath)));
         } catch {
           case e: URISyntaxException =>
-            LOG.error("Error when trying to use shell script path specified in env" + ", path=" + shellScriptPath);
+            LOG.error("Error when trying to use shell script path specified in env" + ", path=" + commandPath);
             e.printStackTrace();
-
             // A failure scenario on bad input such as invalid shell script path
             // We know we cannot continue launching the container
             // so we should release it.
@@ -93,38 +93,19 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
             numFailedContainers.incrementAndGet();
             return ;
         }
-        localResources.put(ExecShellStringPath, shellRsrc);
-      }
-      ctx.setLocalResources(localResources);
-
-      // Set the necessary command to execute on the allocated container
-      val vargs = Seq[CharSequence]();
-
-      // Set executable command
-      vargs.add(shellCommand);
-      // Set shell script path
-      if (!shellScriptPath.isEmpty()) {
-        vargs.add(ExecShellStringPath);
+        localResources.put(softLink, localResource);
+        ctx.setLocalResources(localResources);
       }
 
-      // Add log redirect params
-      // TODO
-      // We should redirect the output to hdfs instead of local logs
-      // so as to be able to look at the final output after the containers
-      // have been released.
-      // Could use a path suffixed with /AppId/AppAttempId/ContainerId/std[out|err]
-      vargs.add("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout");
-      vargs.add("2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stderr");
+      val command = List(
+      startCommand,
+      softLink,
+      "1>/users/kamkasravi/commandstdout",
+      "2>/users/kamkasravi/commandstderr")
+//      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,
+//      "2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDERR)
 
-      // Get final commmand
-      val command = new StringBuilder();
-      for (str <- vargs) {
-        command.append(str).append(" ");
-      }
-
-      val commands = Seq[String]();
-      commands.add(command.toString());
-      ctx.setCommands(commands);
+      ctx.setCommands(command);
 
       val startReq = Records.newRecord(classOf[StartContainerRequest]);
       startReq.setContainerLaunchContext(ctx);
@@ -154,7 +135,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 
   def setupContainerAskForRM(numContainers: Int): ContainerRequest = {
     // setup requirements for hosts
-    // using * as any host will do for the distributed shell app
+    // using * as any host will do for the distributed
     // set the priority for the request
     val pri = Records.newRecord(classOf[Priority]);
     // TODO - what is the range for priority? how to decide?
@@ -266,7 +247,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
         }
 
         val askCount = numTotalContainers - numRequestedContainers.get()
-        numRequestedContainers.addAndGet(askCount);
+        numRequestedContainers.addAndGet(askCount)
 
         // Setup request to be sent to RM to allocate containers
         val containerAsk = setupContainerAskForRM(askCount)
@@ -274,10 +255,10 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 
         // Send the request to RM
         LOG.info("Asking RM for containers" + ", askCount=" + askCount);
-        val amResp = sendContainerAskToRM(resourceManager);
+        val amResp = sendContainerAskToRM(resourceManager)
 
         // Retrieve list of allocated containers from the response
-        val allocatedContainers = amResp.getAllocatedContainers();
+        val allocatedContainers = amResp.getAllocatedContainers()
         LOG.info("Got response from RM for container ask, allocatedCnt=" + allocatedContainers.size())
         numAllocatedContainers.addAndGet(allocatedContainers.size());
         for (allocatedContainer <- allocatedContainers) {
@@ -321,7 +302,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
           if (0 != exitStatus) {
             // container failed
             if (-100 != exitStatus) {
-              // shell script failed
+              // container failed
               // counts as completed
               numCompletedContainers.incrementAndGet();
               numFailedContainers.incrementAndGet();
@@ -354,7 +335,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 
         // TODO
         // Add a timeout handling layer
-        // for misbehaving shell commands
+        // for misbehaving commands
       }
 
       // Join all launched threads
@@ -394,16 +375,16 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   }
 }
 
-object KafkaYarnManager {
+object KafkaYarnManager extends App {
   val LOG = LogFactory.getLog(classOf[KafkaYarnManager])
   val ApplicationName = "KafkaYarnManager"
 
   /**
    * @param args
    */
-  def main(args: Array[String]) {
+//  def main(args: Array[String]) {
     val rt = ToolRunner.run(new KafkaYarnManager, args)
     sys.exit(rt)
-  }
+//  }
 
 }
