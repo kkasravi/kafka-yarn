@@ -65,13 +65,21 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     amContainer.setEnvironment(environment)
     LOG.info("ApplicationManager environment: " + environment)
 
+    var arg = ""
+    if(config.start) {
+        arg = "--start"
+      } else if(config.stop) {
+        arg = "--stop"
+      } else if(config.status) {
+        arg = "--status"
+      }
     // Construct the command to launch the AppMaster
     val command = List(
       Environment.JAVA_HOME.$ + "/bin/java",
-      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1045",
-      "start",
+//      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
       "-cp "+"kafka-yarn-assembly-0.0.1-SNAPSHOT.jar",
       "kafka.yarn.KafkaYarnManager",
+      arg,
       "1>/users/kamkasravi/stdout",
       "2>/users/kamkasravi/stderr")
 //      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,
@@ -100,12 +108,28 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
       val reportResponse = applicationsManager.getApplicationReport(reportRequest)
       val report = reportResponse.getApplicationReport
 
+      LOG.info("Application report from ASM: \n" +
+        "\t application identifier: " + appId.toString() + "\n" +
+        "\t appId: " + appId.getId() + "\n" +
+        "\t clientToken: " + report.getClientToken() + "\n" +
+        "\t appDiagnostics: " + report.getDiagnostics() + "\n" +
+        "\t appMasterHost: " + report.getHost() + "\n" +
+        "\t appQueue: " + report.getQueue() + "\n" +
+        "\t appMasterRpcPort: " + report.getRpcPort() + "\n" +
+        "\t appStartTime: " + report.getStartTime() + "\n" +
+        "\t yarnAppState: " + report.getYarnApplicationState() + "\n" +
+        "\t distributedFinalState: " + report.getFinalApplicationStatus() + "\n" +
+        "\t appTrackingUrl: " + report.getTrackingUrl() + "\n" +
+        "\t appUser: " + report.getUser()
+      )
+      
       val state = report.getYarnApplicationState
       state match {
         case FINISHED =>
           report.getFinalApplicationStatus == FinalApplicationStatus.SUCCEEDED
         case KILLED => false
         case FAILED => false
+        case ACCEPTED => Thread.sleep(3); monitor(appId)
         case _      => monitor(appId)
       }
     }

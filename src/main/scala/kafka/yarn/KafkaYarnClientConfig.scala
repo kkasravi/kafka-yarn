@@ -5,26 +5,26 @@ import scala.collection.mutable.ArrayBuffer
 class KafkaYarnClientConfig private (val args: Array[String]){
   var start: Boolean = false
   var stop: Boolean = false
+  var status: Boolean = false
   parseArgs(args.toList)
   
   private def parseArgs(inputArgs: List[String]): Unit = {
     val zookeeperArgs = List[String]()
     var args = inputArgs
-
     if(args.isEmpty) {
     	printUsageAndExit(1)
     }
     while (! args.isEmpty) {
-
       args match {
         case ("--start") :: tail =>
           start = true
           args = tail
-
         case ("--stop") :: tail =>
           stop = true
           args = tail
-
+        case ("--status") :: tail =>
+          status = true
+          args = tail
         case ("--zookeeper") :: value :: tail =>
           zookeeperArgs +: value
           args = tail
@@ -40,10 +40,8 @@ class KafkaYarnClientConfig private (val args: Array[String]){
              case Nil =>
              case _ =>
           }
-
         case Nil =>
           printUsageAndExit(1)
-
         case _ =>
           printUsageAndExit(1, args)
       }

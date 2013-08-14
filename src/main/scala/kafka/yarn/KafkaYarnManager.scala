@@ -27,10 +27,8 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   import KafkaYarnManager._
   var appDone = false
   var containerMemory = 1024
-  var commandPath = ""
-  val startCommand = "kafka"
+  var arg = ""
   val fs = FileSystem.get(conf)
-  var softLink = "command.sh"
   val commandEnv = Map[String, String]()
   val requestPriority = 0
   val rmRequestID = new AtomicInteger()
@@ -48,7 +46,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   // Tracking url to which app master publishes info for clients to monitor
   val appMasterTrackingUrl = ""
 
-  class LaunchContainer(container: Container, var cm: ContainerManager) extends Runnable {
+  class LaunchContainer(container: Container, var cm: ContainerManager, config: KafkaYarnManagerConfig) extends Runnable {
 
     @Override 
     /**
@@ -70,36 +68,15 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
       // Set the environment
       ctx.setEnvironment(commandEnv);
 
-      // The container for the kafka command needs its own local resources too.
-      // In this scenario, if local resources are specified, we need to have it copied
-      // and made available to the container.
-      if (!commandPath.isEmpty()) {
-        // Set the local resources
-        val localResources = Map[String, LocalResource]();
-        val localResource = Records.newRecord(classOf[LocalResource]);
-        localResource.setType(LocalResourceType.FILE);
-        localResource.setVisibility(LocalResourceVisibility.APPLICATION);
-        try {
-          localResource.setResource(ConverterUtils.getYarnUrlFromURI(new URI(commandPath)));
-        } catch {
-          case e: URISyntaxException =>
-            LOG.error("Error when trying to use shell script path specified in env" + ", path=" + commandPath);
-            e.printStackTrace();
-            // A failure scenario on bad input such as invalid shell script path
-            // We know we cannot continue launching the container
-            // so we should release it.
-            // TODO
-            numCompletedContainers.incrementAndGet();
-            numFailedContainers.incrementAndGet();
-            return ;
-        }
-        localResources.put(softLink, localResource);
-        ctx.setLocalResources(localResources);
+      if(config.start) {
+        arg = "--start"
+      } else if(config.stop) {
+        arg = "--stop"
       }
-
       val command = List(
-      startCommand,
-      softLink,
+      "service",
+      "kafka",
+      arg,
       "1>/users/kamkasravi/commandstdout",
       "2>/users/kamkasravi/commandstderr")
 //      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,
@@ -185,6 +162,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
    * @param args
    */
   def run(args: Array[String]) = {
+    var config: KafkaYarnManagerConfig = KafkaYarnManagerConfig(args)
     val rpc = YarnRPC.create(conf)
     // Get containerId
     val containerId = ConverterUtils.toContainerId(
@@ -270,7 +248,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
             + ", containerState" + allocatedContainer.getState()
             + ", containerResourceMemory" + allocatedContainer.getResource().getMemory());
 
-          val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer, rpc));
+          val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer, rpc), config);
           val launchThread = new Thread(runnableLaunchContainer);
 
           // launch and start the container on a separate thread to keep the main thread unblocked
