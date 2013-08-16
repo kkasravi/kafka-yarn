@@ -17,14 +17,16 @@ import org.apache.hadoop.yarn.ipc._
 import org.apache.hadoop.yarn.util._
 
 class KafkaYarnClient(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
-  var config: KafkaYarnClientConfig = null
+  var config: KafkaYarnConfig = null
 
   def run(args: Array[String]) = {
     import KafkaYarnClient.{LOG, ApplicationName}
     val fs = FileSystem.get(getConf)
     val rpc = YarnRPC.create(getConf)
     
-    config = KafkaYarnClientConfig(args)
+    config = KafkaYarnConfig(args)
+    val zk = config.zookeeper.get("host").get+":"+config.zookeeper.get("port").get
+    KafkaYarnZookeeper(zk)
     val jarName: Option[String] = Some("target/scala-2.9.2/kafka-yarn-assembly-0.0.1-SNAPSHOT.jar")
     // Create a new container launch context for the AM's container
     val amContainer = Records.newRecord(classOf[ContainerLaunchContext])
@@ -65,21 +67,13 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     amContainer.setEnvironment(environment)
     LOG.info("ApplicationManager environment: " + environment)
 
-    var arg = ""
-    if(config.start) {
-        arg = "--start"
-      } else if(config.stop) {
-        arg = "--stop"
-      } else if(config.status) {
-        arg = "--status"
-      }
     // Construct the command to launch the AppMaster
-    val command = List(
+    val command: List[String] = List(
       Environment.JAVA_HOME.$ + "/bin/java",
 //      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
       "-cp "+"kafka-yarn-assembly-0.0.1-SNAPSHOT.jar",
       "kafka.yarn.KafkaYarnManager",
-      arg,
+      config,
       "1>/users/kamkasravi/stdout",
       "2>/users/kamkasravi/stderr")
 //      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,

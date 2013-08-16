@@ -46,7 +46,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   // Tracking url to which app master publishes info for clients to monitor
   val appMasterTrackingUrl = ""
 
-  class LaunchContainer(container: Container, var cm: ContainerManager, config: KafkaYarnManagerConfig) extends Runnable {
+  class LaunchContainer(container: Container, var cm: ContainerManager, config: KafkaYarnConfig) extends Runnable {
 
     @Override 
     /**
@@ -68,15 +68,10 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
       // Set the environment
       ctx.setEnvironment(commandEnv);
 
-      if(config.start) {
-        arg = "--start"
-      } else if(config.stop) {
-        arg = "--stop"
-      }
-      val command = List(
+      val command: List[String] = List(
       "service",
       "kafka",
-      arg,
+      config,
       "1>/users/kamkasravi/commandstdout",
       "2>/users/kamkasravi/commandstderr")
 //      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,
@@ -162,7 +157,8 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
    * @param args
    */
   def run(args: Array[String]) = {
-    var config: KafkaYarnManagerConfig = KafkaYarnManagerConfig(args)
+    var config: KafkaYarnConfig = KafkaYarnConfig(args)
+    val zk = KafkaYarnZookeeper(config.zookeeper.get("host").get+":"+config.zookeeper.get("port").get)
     val rpc = YarnRPC.create(conf)
     // Get containerId
     val containerId = ConverterUtils.toContainerId(
