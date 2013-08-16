@@ -25,11 +25,11 @@ brokers: [
 ]
 }
 </pre>
-### --start <start>.json
-Start the configured brokers.  
-### --monitor
-Monitor the started brokers
-### --status 
-Status of the started brokers
-### --stop 
-Stop the running brokers
+### --start zookeeper
+Start the configured brokers. The AppMaster uses zookeeper to retrieve state of broker locations. Default zookeeper is localhost:2181
+### --monitor zookeeper
+Monitor the started brokers. The AppMaster uses zookeeper to retrieve state of broker locations. Default zookeeper is localhost:2181
+### --status zookeeper
+Status of the started brokers. The AppMaster uses zookeeper to retrieve state of broker locations. Default zookeeper is localhost:2181
+### --stop zookeeper
+Stop the running brokers. The AppMaster uses zookeeper to retrieve state of broker locations. Default zookeeper is localhost:2181
