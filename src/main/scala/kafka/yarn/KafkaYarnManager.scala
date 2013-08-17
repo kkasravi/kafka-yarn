@@ -110,15 +110,8 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   }
 
   def setupContainerAskForRM(numContainers: Int): ContainerRequest = {
-    // setup requirements for hosts
-    // using * as any host will do for the distributed
-    // set the priority for the request
     val pri = Records.newRecord(classOf[Priority]);
-    // TODO - what is the range for priority? how to decide?
     pri.setPriority(requestPriority);
-
-    // Set up resource type requirements
-    // For now, only memory is supported so we set memory requirements
     val capability = Records.newRecord(classOf[Resource]);
     capability.setMemory(containerMemory);
     var hosts: Seq[String] = null;
@@ -128,8 +121,8 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 	    hosts = value.getChildren(zkHostsPath)          
 	  }
     })
-
-    val request = new ContainerRequest(capability, hosts.toArray, null, pri, numContainers);
+    val hostsArray: Seq[String] = Option(hosts).getOrElse(Seq[String]())
+    val request = new ContainerRequest(capability, hostsArray.toArray, null, pri, numContainers);
     LOG.info("Requested container ask: " + request.toString());
     return request;
   }
@@ -143,8 +136,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   def sendContainerAskToRM(resourceManager: AMRMClientImpl): AMResponse = {
     val progressIndicator = numCompletedContainers.get() / numTotalContainers;
 
-    LOG.info("Sending request to RM for containers" + ", progress="
-        + progressIndicator);
+    LOG.info("Sending request to RM for containers" + ", progress=" + progressIndicator);
 
     val resp = resourceManager.allocate(progressIndicator);
     return resp.getAMResponse();
@@ -263,6 +255,14 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
             + ", containerNodeURI=" + allocatedContainer.getNodeHttpAddress()
             + ", containerState" + allocatedContainer.getState()
             + ", containerResourceMemory" + allocatedContainer.getResource().getMemory());
+
+          Option(zookeeper).map(value => {
+              val path = value.exists(zkHostsPath)
+              if(path == null) {
+                value.createPath(zkHostsPath)
+              }
+	          value.createPath(zkHostsPath + "/" + allocatedContainer.getNodeId().getHost())        
+           })
 
           val runnableLaunchContainer = new LaunchContainer(allocatedContainer, connectToCM(allocatedContainer, rpc), config);
           val launchThread = new Thread(runnableLaunchContainer);

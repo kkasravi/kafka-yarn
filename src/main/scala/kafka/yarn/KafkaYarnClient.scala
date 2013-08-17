@@ -72,7 +72,7 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     // Construct the command to launch the AppMaster
     val command: List[String] = List(
       Environment.JAVA_HOME.$ + "/bin/java",
-      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
+//      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
       "-cp "+"kafka-yarn-assembly-0.0.1-SNAPSHOT.jar",
       "kafka.yarn.KafkaYarnManager",
       config,
