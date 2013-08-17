@@ -19,31 +19,33 @@ import org.apache.hadoop.yarn.util._
 class KafkaYarnClient(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
   var config: KafkaYarnConfig = null
 
+  def addResource(name: Option[String]): Map[String,LocalResource] = {
+    val fs = FileSystem.get(getConf)
+    name.map({
+      file =>
+      val filePath = new Path(file)
+      val fileStatus = fs.getFileStatus(filePath)
+      val amJarRsrc = Records.newRecord(classOf[LocalResource])
+      amJarRsrc.setType(LocalResourceType.FILE)
+      amJarRsrc.setVisibility(LocalResourceVisibility.PUBLIC)
+      amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(FileContext.getFileContext.makeQualified(filePath)))
+      amJarRsrc.setTimestamp(fileStatus.getModificationTime)
+      amJarRsrc.setSize(fileStatus.getLen)
+      (filePath.getName -> amJarRsrc)
+    }).toMap
+  }
+  
   def run(args: Array[String]) = {
     import KafkaYarnClient.{LOG, ApplicationName}
-    val fs = FileSystem.get(getConf)
     val rpc = YarnRPC.create(getConf)
     
-    config = KafkaYarnConfig(args)
-    val zk = config.zookeeper.get("host").get+":"+config.zookeeper.get("port").get
-    KafkaYarnZookeeper(zk)
+    config = KafkaYarnConfig(args, ApplicationName)
     val jarName: Option[String] = Some("target/scala-2.9.2/kafka-yarn-assembly-0.0.1-SNAPSHOT.jar")
     // Create a new container launch context for the AM's container
     val amContainer = Records.newRecord(classOf[ContainerLaunchContext])
 
     // Define the local resources required
-    val localResources = jarName.map({
-      jar =>
-      val jarPath = new Path(jar)
-      val jarStatus = fs.getFileStatus(jarPath)
-      val amJarRsrc = Records.newRecord(classOf[LocalResource])
-      amJarRsrc.setType(LocalResourceType.FILE)
-      amJarRsrc.setVisibility(LocalResourceVisibility.PUBLIC)
-      amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(FileContext.getFileContext.makeQualified(jarPath)))
-      amJarRsrc.setTimestamp(jarStatus.getModificationTime)
-      amJarRsrc.setSize(jarStatus.getLen)
-      (jarPath.getName -> amJarRsrc)
-    }).toMap
+    val localResources:Map[String,LocalResource] = addResource(jarName) ++ addResource(config.fileOption)
     amContainer.setLocalResources(localResources)
 
     // Connect to ApplicationsManager
@@ -70,10 +72,11 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     // Construct the command to launch the AppMaster
     val command: List[String] = List(
       Environment.JAVA_HOME.$ + "/bin/java",
-//      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
+      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
       "-cp "+"kafka-yarn-assembly-0.0.1-SNAPSHOT.jar",
       "kafka.yarn.KafkaYarnManager",
       config,
+      config.fileOption.get,
       "1>/users/kamkasravi/stdout",
       "2>/users/kamkasravi/stderr")
 //      "1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT,

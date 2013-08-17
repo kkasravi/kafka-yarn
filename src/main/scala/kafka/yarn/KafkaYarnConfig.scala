@@ -4,68 +4,77 @@ import scala.io.Source
 import scala.util.parsing.json._
 
 
-class KafkaYarnConfig private (val args: Array[String]){
+class KafkaYarnConfig private (val args: Array[String], val command: String){
   val START = Option("--start")
   val STOP = Option("--stop")
   val STATUS = Option("--status")
   val CONFIG = Option("--config")
   var arg: String = null
+  var fileOption: Option[String] = None
   var zookeeper:Map[String,String] = null
   parseArgs(args.toList)
 
+  private def parseJsonFile(file:String): Unit = {
+    val text = Source.fromFile(file).mkString
+    val json = JSON.parseFull(text)
+    val map:Map[String,Any] = json.get.asInstanceOf[Map[String, Any]]
+    val master:Map[String,Any] = map.get("master").asInstanceOf[Option[Map[String,Any]]].get;
+    zookeeper = master.get("zookeeper").asInstanceOf[Option[Map[String,String]]].get
+    fileOption = Some(file)    
+  }
+  
   private def parseArgs(inputArgs: List[String]): Unit = {
-    var args = inputArgs    
+    var args = inputArgs 
     if(args.isEmpty) {
-    	printUsageAndExit(1)
-    }
-    class Config {
-      class Zookeeper(host:String,port:Integer)
-      class Master(zookeeper:Zookeeper)
-      class Broker(id:Integer,port:Integer,zookeepers:List[Zookeeper])
-      var master: Master = null
-      var brokers: List[Broker] = null
+    	printUsageAndExit(1,command)
     }
     var skip = false
     args.foreach({ value => {
       Option(value) match {
         case START =>
           arg = value
+          args = args.tail
+          val file = args.first
+          skip = true
+          parseJsonFile(file)
         case STOP =>
           arg = value
         case STATUS =>
           arg = value
         case CONFIG =>
+          arg = value
           args = args.tail
           val file = args.first
           skip = true
-          val text = Source.fromFile(file).mkString//.split ("\n").map (_.trim).mkString
+          val text = Source.fromFile(file).mkString
           val json = JSON.parseFull(text)
           val map:Map[String,Any] = json.get.asInstanceOf[Map[String, Any]]
           val master:Map[String,Any] = map.get("master").asInstanceOf[Option[Map[String,Any]]].get;
           zookeeper = master.get("zookeeper").asInstanceOf[Option[Map[String,String]]].get
           val brokers:List[Any] = map.get("brokers").asInstanceOf[Option[List[Any]]].get;
-          val c = new Config()
-          c.master = new c.Master(new c.Zookeeper(zookeeper.get("host").get,zookeeper.get("port").get.toInt))
+          fileOption = Some(file)
         case _ =>
           if(skip) {
             skip = false
           } else {
-        	  printUsageAndExit(1)
+        	  printUsageAndExit(1,command)
           }
       }
     }})
   }
 
-    def printUsageAndExit(exitCode: Int, unknownParam: Any = null) {
+    def printUsageAndExit(exitCode: Int, command: String, unknownParam: Any = null) {
 	    if (unknownParam != null) {
 	      System.err.println("Unknown/unsupported param " + unknownParam)
 	    }
 	    System.err.println(
-	      "Usage: KafkaYarnManager [options] \n" +
+	      "Usage: "+command+" [options] input.json\n" +
 	      "Options:\n" +
-	      "  --start        Start the kafka brokers\n" +
-	      "  --stop         Stop the kafka brokers\n" +
-	      "  --zookeeper  <add|remove|list>.\n")
+	      "  --config Configure the kafka brokers.\n" +
+	      "  --star   Start the kafka brokers. Get zookeeper information from input.json.\n" +
+	      "  --stop   Stop the kafka brokers. Get zookeeper information from input.json.\n" +
+	      "" +
+	      "Zookeeper and broker information used by the various options is read from input.json.")
 	    System.exit(exitCode)
 	  }
 }
@@ -73,5 +82,5 @@ class KafkaYarnConfig private (val args: Array[String]){
 object KafkaYarnConfig {
    implicit def convert(v:KafkaYarnConfig): String = v.arg
 
-  def apply(args: Array[String]) = new KafkaYarnConfig(args)
+  def apply(args: Array[String], command: String) = new KafkaYarnConfig(args, command)
 }

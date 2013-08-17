@@ -22,12 +22,16 @@ import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.yarn.client.AMRMClient.ContainerRequest
 import org.apache.hadoop.yarn.client.AMRMClientImpl
+import org.apache.zookeeper.data.Stat
 
 class KafkaYarnManager(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
   import KafkaYarnManager._
   var appDone = false
   var containerMemory = 1024
   var arg = ""
+  val zkPath = "/appmaster"
+  val zkHostsPath = zkPath+"/hosts"
+  var zookeeper: KafkaYarnZookeeper = null
   val fs = FileSystem.get(conf)
   val commandEnv = Map[String, String]()
   val requestPriority = 0
@@ -117,8 +121,15 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
     // For now, only memory is supported so we set memory requirements
     val capability = Records.newRecord(classOf[Resource]);
     capability.setMemory(containerMemory);
+    var hosts: Seq[String] = null;
+    Option(zookeeper).map(value => {
+      val path = value.exists(zkHostsPath)
+	  if(path != null) {
+	    hosts = value.getChildren(zkHostsPath)          
+	  }
+    })
 
-    val request = new ContainerRequest(capability, null, null, pri, numContainers);
+    val request = new ContainerRequest(capability, hosts.toArray, null, pri, numContainers);
     LOG.info("Requested container ask: " + request.toString());
     return request;
   }
@@ -157,8 +168,17 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
    * @param args
    */
   def run(args: Array[String]) = {
-    var config: KafkaYarnConfig = KafkaYarnConfig(args)
-    val zk = KafkaYarnZookeeper(config.zookeeper.get("host").get+":"+config.zookeeper.get("port").get)
+    var config: KafkaYarnConfig = KafkaYarnConfig(args, ApplicationName)
+    Option(config.zookeeper).map(value => {
+	    zookeeper = KafkaYarnZookeeper(value.get("host").get+":"+value.get("port").get)
+	    if(zookeeper.isAlive) {
+	      val path = zookeeper.exists(zkPath)
+	      if(path == null) {
+	        zookeeper.createPath(zkPath)        
+	      }      
+	    }
+    })
+
     val rpc = YarnRPC.create(conf)
     // Get containerId
     val containerId = ConverterUtils.toContainerId(
@@ -352,13 +372,6 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
 object KafkaYarnManager extends App {
   val LOG = LogFactory.getLog(classOf[KafkaYarnManager])
   val ApplicationName = "KafkaYarnManager"
-
-  /**
-   * @param args
-   */
-//  def main(args: Array[String]) {
-    val rt = ToolRunner.run(new KafkaYarnManager, args)
-    sys.exit(rt)
-//  }
-
+  val rt = ToolRunner.run(new KafkaYarnManager, args)
+  sys.exit(rt)
 }
