@@ -1,28 +1,46 @@
 package kafka.yarn
 
-import org.apache.hadoop.conf._
-import org.apache.hadoop.net._
-import org.apache.hadoop.yarn.api._
-import org.apache.hadoop.yarn.api.protocolrecords._
-import org.apache.hadoop.yarn.api.records._
-import org.apache.hadoop.yarn.conf._
-import org.apache.hadoop.yarn.ipc._
-import org.apache.hadoop.yarn.util._
+import java.lang.Override
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
+
+import scala.collection.JavaConversions.asScalaBuffer
+import scala.collection.JavaConversions.mapAsJavaMap
+import scala.collection.JavaConversions.seqAsJavaList
+
 import org.apache.commons.logging.LogFactory
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.conf.Configured
+import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.net.NetUtils
 import org.apache.hadoop.util.Tool
 import org.apache.hadoop.util.ToolRunner
-import java.util.concurrent.atomic.AtomicInteger
-import scala.collection.JavaConversions._
-import java.util.concurrent.CopyOnWriteArrayList
-import java.net.URISyntaxException
-import java.util.HashMap
-import java.net.URI
-import org.apache.hadoop.yarn.exceptions.YarnRemoteException
-import org.apache.hadoop.fs.Path
-import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.yarn.api.ApplicationConstants
+import org.apache.hadoop.yarn.api.ContainerManager
+import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRequest
+import org.apache.hadoop.yarn.api.protocolrecords.StartContainerRequest
+import org.apache.hadoop.yarn.api.records.AMResponse
+import org.apache.hadoop.yarn.api.records.ApplicationAttemptId
+import org.apache.hadoop.yarn.api.records.Container
+import org.apache.hadoop.yarn.api.records.ContainerId
+import org.apache.hadoop.yarn.api.records.ContainerLaunchContext
+import org.apache.hadoop.yarn.api.records.ContainerState
+import org.apache.hadoop.yarn.api.records.FinalApplicationStatus
+import org.apache.hadoop.yarn.api.records.LocalResource
+import org.apache.hadoop.yarn.api.records.LocalResourceType
+import org.apache.hadoop.yarn.api.records.LocalResourceVisibility
+import org.apache.hadoop.yarn.api.records.Priority
+import org.apache.hadoop.yarn.api.records.Resource
 import org.apache.hadoop.yarn.client.AMRMClient.ContainerRequest
 import org.apache.hadoop.yarn.client.AMRMClientImpl
-import org.apache.zookeeper.data.Stat
+import org.apache.hadoop.yarn.conf.YarnConfiguration
+import org.apache.hadoop.yarn.exceptions.YarnRemoteException
+import org.apache.hadoop.yarn.ipc.YarnRPC
+import org.apache.hadoop.yarn.util.ConverterUtils
+import org.apache.hadoop.yarn.util.Records
+
+import kafka.yarn.KafkaYarnConfig.convert
 
 class KafkaYarnManager(conf: Configuration = new Configuration) extends Configured(conf) with Tool {
   import KafkaYarnManager._
@@ -33,6 +51,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   val zkHostsPath = zkPath+"/hosts"
   var zookeeper: KafkaYarnZookeeper = null
   val fs = FileSystem.get(conf)
+  var config: KafkaYarnConfig = null
   val commandEnv = Map[String, String]()
   val requestPriority = 0
   val rmRequestID = new AtomicInteger()
@@ -40,7 +59,6 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
   val numAllocatedContainers = new AtomicInteger()
   val numFailedContainers = new AtomicInteger()
   val numRequestedContainers = new AtomicInteger()
-  val numTotalContainers = 1
   var launchThreads = collection.mutable.Seq[Thread]()
   var appAttemptID = Records.newRecord(classOf[ApplicationAttemptId])
   val releasedContainers = new CopyOnWriteArrayList[ContainerId]()
@@ -92,7 +110,6 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
           LOG.info("Start container failed for :"
             + ", containerId=" + container.getId());
           e.printStackTrace();
-        // TODO do we need to release this container?
       }
 
     }
@@ -106,7 +123,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
     val cmIpPortStr = container.getNodeId().getHost() + ":" + container.getNodeId().getPort()
     val cmAddress = NetUtils.createSocketAddr(cmIpPortStr)
     LOG.info("Connecting to ContainerManager at " + cmIpPortStr)
-    rpc.getProxy(classOf[ContainerManager], cmAddress, conf).asInstanceOf[ContainerManager];
+    rpc.getProxy(classOf[ContainerManager], cmAddress, conf).asInstanceOf[ContainerManager]
   }
 
   def setupContainerAskForRM(numContainers: Int): ContainerRequest = {
@@ -114,17 +131,13 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
     pri.setPriority(requestPriority);
     val capability = Records.newRecord(classOf[Resource]);
     capability.setMemory(containerMemory);
-    var hosts: Seq[String] = null;
-    Option(zookeeper).map(value => {
-      val path = value.exists(zkHostsPath)
-	  if(path != null) {
-	    hosts = value.getChildren(zkHostsPath)          
-	  }
-    })
-    val hostsArray: Seq[String] = Option(hosts).getOrElse(Seq[String]())
-    val request = new ContainerRequest(capability, hostsArray.toArray, null, pri, numContainers);
-    LOG.info("Requested container ask: " + request.toString());
-    return request;
+    var hosts: Seq[String] = Option(zookeeper).map[Seq[String]](zookeeper => {
+      Option(zookeeper).map(zookeeper=>zookeeper.getChildren(zkHostsPath)).getOrElse(null)         
+    }).getOrElse(null)
+    val hostsArray: Seq[String] = Option(hosts).getOrElse(null)
+    val request = new ContainerRequest(capability, Option(hostsArray).map(hostsArray=>hostsArray.toArray).getOrElse(null), null, pri, numContainers);
+    LOG.info("Requested container ask: " + request.toString())
+    request
   }
 
   /**
@@ -134,7 +147,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
    * @throws YarnRemoteException
    */
   def sendContainerAskToRM(resourceManager: AMRMClientImpl): AMResponse = {
-    val progressIndicator = numCompletedContainers.get() / numTotalContainers;
+    val progressIndicator = numCompletedContainers.get() / config.brokers.size;
 
     LOG.info("Sending request to RM for containers" + ", progress=" + progressIndicator);
 
@@ -160,7 +173,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
    * @param args
    */
   def run(args: Array[String]) = {
-    var config: KafkaYarnConfig = KafkaYarnConfig(args, ApplicationName)
+    config = KafkaYarnConfig(args, ApplicationName)
     Option(config.zookeeper).map(value => {
 	    zookeeper = KafkaYarnZookeeper(value.get("host").get+":"+value.get("port").get)
 	    if(zookeeper.isAlive) {
@@ -214,14 +227,15 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
         LOG.info("Container memory specified above max threshold of cluster. Using max value."
           + ", specified=" + containerMemory
           + ", max=" + maxMem);
-        containerMemory = maxMem;
+        containerMemory = maxMem
       }
 
-      var loopCounter = 0;
-      while (numCompletedContainers.get() < numTotalContainers && !appDone) {
+      var loopCounter = 0
+      val brokerCount = config.brokers.size
+      while (numCompletedContainers.get() < config.brokers.size && !appDone) {
         loopCounter += 1
         LOG.info("Current application state: loop=" + loopCounter
-          + ", appDone=" + appDone + ", total=" + numTotalContainers
+          + ", appDone=" + appDone + ", total=" + brokerCount
           + ", requested=" + numRequestedContainers + ", completed="
           + numCompletedContainers + ", failed=" + numFailedContainers
           + ", currentAllocated=" + numAllocatedContainers);
@@ -232,7 +246,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
           case e => LOG.info("Sleep interrupted " + e.getMessage())
         }
 
-        val askCount = numTotalContainers - numRequestedContainers.get()
+        val askCount = brokerCount - numRequestedContainers.get()
         numRequestedContainers.addAndGet(askCount)
 
         // Setup request to be sent to RM to allocate containers
@@ -317,12 +331,12 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
                 + containerStatus.getContainerId());
           }
                   }
-        if (numCompletedContainers.get() == numTotalContainers) {
+        if (numCompletedContainers.get() == brokerCount) {
           appDone = true;
         }
 
         LOG.info("Current application state: loop=" + loopCounter
-            + ", appDone=" + appDone + ", total=" + numTotalContainers
+            + ", appDone=" + appDone + ", total=" + brokerCount
             + ", requested=" + numRequestedContainers + ", completed="
             + numCompletedContainers + ", failed=" + numFailedContainers
             + ", currentAllocated=" + numAllocatedContainers);
@@ -355,7 +369,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
         appStatus = FinalApplicationStatus.SUCCEEDED;
       } else {
         appStatus = FinalApplicationStatus.FAILED;
-        appMessage = "Diagnostics." + ", total=" + numTotalContainers + ", completed=" + numCompletedContainers.get() + ", allocated="
+        appMessage = "Diagnostics." + ", total=" + brokerCount + ", completed=" + numCompletedContainers.get() + ", allocated="
             + numAllocatedContainers.get() + ", failed="
             + numFailedContainers.get();
         isSuccess = 1;
