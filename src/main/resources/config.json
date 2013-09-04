@@ -9,6 +9,8 @@
   {
     "id": "0",
     "port": "9092",
+    "minMemory": "1024",
+    "maxMemory": "2048",
     "zookeepers": [
       {
         "host": "localhost",

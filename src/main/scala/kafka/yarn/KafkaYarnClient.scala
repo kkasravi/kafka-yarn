@@ -25,13 +25,14 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
       file =>
       val filePath = new Path(file)
       val fileStatus = fs.getFileStatus(filePath)
+      val name = filePath.getName
       val amJarRsrc = Records.newRecord(classOf[LocalResource])
       amJarRsrc.setType(LocalResourceType.FILE)
       amJarRsrc.setVisibility(LocalResourceVisibility.PUBLIC)
       amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(FileContext.getFileContext.makeQualified(filePath)))
       amJarRsrc.setTimestamp(fileStatus.getModificationTime)
       amJarRsrc.setSize(fileStatus.getLen)
-      (filePath.getName -> amJarRsrc)
+      (name -> amJarRsrc)
     }).toMap
   }
   
@@ -72,7 +73,7 @@ class KafkaYarnClient(conf: Configuration = new Configuration) extends Configure
     // Construct the command to launch the AppMaster
     val command: List[String] = List(
       Environment.JAVA_HOME.$ + "/bin/java",
-//      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
+      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=1046",
       "-cp "+"kafka-yarn-assembly-0.0.1-SNAPSHOT.jar",
       "kafka.yarn.KafkaYarnManager",
       config,

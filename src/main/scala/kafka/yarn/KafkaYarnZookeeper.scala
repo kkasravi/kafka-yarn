@@ -53,7 +53,7 @@ class KafkaYarnZookeeper(servers: String, sessionTimeout: Int, connectTimeout: I
     try {
       isAlive
     } catch {
-      case e => {
+      case e:Throwable => {
         throw new RuntimeException("Could not connect to zookeeper ensemble: " + servers 
           + ". Connection timed out after " + connectTimeout + " milliseconds!", e)
       }

@@ -9,6 +9,7 @@ class KafkaYarnConfig private (val args: Array[String], val command: String){
   val STOP = Option("--stop")
   val STATUS = Option("--status")
   val CONFIG = Option("--config")
+  val INSTALL = Option("--install")
   var arg: String = null
   var fileOption: Option[String] = None
   var zookeeper:Map[String,String] = null
@@ -16,8 +17,12 @@ class KafkaYarnConfig private (val args: Array[String], val command: String){
   parseArgs(args.toList)
 
   private def parseJsonFile(file:String): Unit = {
-    val text = Source.fromFile(file).mkString
-    val json = JSON.parseFull(text)
+    val text = try { 
+      Source.fromFile(file.split("/").last).mkString 
+      } catch { 
+        case e: Exception => Source.fromFile(file).mkString
+        }
+    val json = JSON.parseFull(text.toString)
     val map:Map[String,Any] = json.get.asInstanceOf[Map[String, Any]]
     val master:Map[String,Any] = map.get("master").asInstanceOf[Option[Map[String,Any]]].get;
     zookeeper = master.get("zookeeper").map[Map[String,String]](value=>value.asInstanceOf[Map[String,String]]).getOrElse(null)      
@@ -36,19 +41,19 @@ class KafkaYarnConfig private (val args: Array[String], val command: String){
         case START =>
           arg = value
           skip = true
-          parseJsonFile(args.tail.first)
+          parseJsonFile(args.tail.head)
         case STOP =>
           arg = value
           skip = true
-          parseJsonFile(args.tail.first)
+          parseJsonFile(args.tail.head)
         case STATUS =>
           arg = value
           skip = true
-          parseJsonFile(args.tail.first)
+          parseJsonFile(args.tail.head)
         case CONFIG =>
           arg = value
           skip = true
-          parseJsonFile(args.tail.first)
+          parseJsonFile(args.tail.head)
         case _ =>
           if(skip) {
             skip = false

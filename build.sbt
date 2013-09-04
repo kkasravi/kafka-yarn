@@ -26,22 +26,11 @@ libraryDependencies ++= Seq(
   "org.apache.hadoop" % "hadoop-yarn-client" % "2.0.4-alpha"
 )
 
-// for tests
-libraryDependencies ++= Seq(
-  "org.specs2" %% "specs2" % "1.9" % "test",
-  "junit" % "junit" % "4.8.2" % "test")
-
-testOptions in Test += Tests.Argument("console", "junitxml")
-
 EclipseKeys.withSource := true
 
 assemblySettings
 
 mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
-//  {
-//    case "META-INF/MANIFEST.MF" => MergeStrategy.discard
-//    case _ => MergeStrategy.first
-//  }
   {
     case "plugin.xml" =>
       MergeStrategy.first

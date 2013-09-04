@@ -134,6 +134,12 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
     var hosts: Seq[String] = Option(zookeeper).map[Seq[String]](zookeeper => {
       Option(zookeeper).map(zookeeper=>zookeeper.getChildren(zkHostsPath)).getOrElse(null)         
     }).getOrElse(null)
+    config.brokers.map(broker => {
+      val mem = Option(broker.get("minMemory")).map[Integer](
+        _.get.asInstanceOf[String].toInt
+      )
+      System.out.println(mem.get)
+    })
     val hostsArray: Seq[String] = Option(hosts).getOrElse(null)
     val request = new ContainerRequest(capability, Option(hostsArray).map(hostsArray=>hostsArray.toArray).getOrElse(null), null, pri, numContainers);
     LOG.info("Requested container ask: " + request.toString())
@@ -243,7 +249,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
         try {
           Thread.sleep(1000);
         } catch {
-          case e => LOG.info("Sleep interrupted " + e.getMessage())
+          case e:Throwable => LOG.info("Sleep interrupted " + e.getMessage())
         }
 
         val askCount = brokerCount - numRequestedContainers.get()
@@ -353,7 +359,7 @@ class KafkaYarnManager(conf: Configuration = new Configuration) extends Configur
         try {
           launchThread.join(10000);
         } catch  {
-          case e =>
+          case e:Throwable =>
           LOG.info("Exception thrown in thread join: " + e.getMessage());
           e.printStackTrace();
         }
